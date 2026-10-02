@@ -1,6 +1,27 @@
 const CFG_KEY = 'AIzaSyDtG1AU22ErnQD60AzBAcaknySiz9_CEq0';
 const CFG_IDT = 'https://www.googleapis.com/identitytoolkit/v3/relyingparty';
 
+const RATE_LIMIT_WINDOW = 60 * 1000;
+const RATE_LIMIT_MAX = 5;
+const rateLimitStore = new Map();
+
+function checkRateLimit(ip) {
+    const now = Date.now();
+    const entry = rateLimitStore.get(ip);
+
+    if (!entry || now - entry.start > RATE_LIMIT_WINDOW) {
+        rateLimitStore.set(ip, { start: now, count: 1 });
+        return true;
+    };
+
+    if (entry.count >= RATE_LIMIT_MAX) {
+        return false;
+    };
+
+    entry.count++;
+    return true;
+}
+
 function randomIP() {
     const oct = () => Math.floor(Math.random() * 254) + 1;
     return `${oct()}.${oct()}.${oct()}.${oct()}`;
@@ -37,11 +58,20 @@ async function sendLoginLink(email) {
 
     const url = `${CFG_IDT}/getOobConfirmationCode?key=${CFG_KEY}`;
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: buildHeaders(),
-        body: JSON.stringify(payload)
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    let response;
+    try {
+        response = await fetch(url, {
+            method: 'POST',
+            headers: buildHeaders(),
+            body: JSON.stringify(payload),
+            signal: controller.signal
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
 
     const text = await response.text();
 
@@ -76,6 +106,15 @@ export default async function handler(req, res) {
         })
     };
 
+    const clientIP = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+
+    if (!checkRateLimit(clientIP)) {
+        return res.status(429).json({
+            status: false,
+            error: 'Terlalu banyak request. Coba lagi dalam 1 menit.'
+        })
+    };
+
     let body = req.body || {};
     if (typeof body === 'string') {
         try {
@@ -84,7 +123,7 @@ export default async function handler(req, res) {
             body = {};
         }
     };
-    
+
     const email = (body.email || '').trim();
     if (!email) {
         return res.status(400).json({
