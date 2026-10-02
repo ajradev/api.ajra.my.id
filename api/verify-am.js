@@ -76,9 +76,16 @@ export default async function handler(req, res) {
         })
     };
 
-    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+    let body = req.body || {};
+    if (typeof body === 'string') {
+        try {
+            body = JSON.parse(body);
+        } catch (e) {
+            body = {};
+        }
+    };
+    
     const email = (body.email || '').trim();
-
     if (!email) {
         return res.status(400).json({
             status: false,
