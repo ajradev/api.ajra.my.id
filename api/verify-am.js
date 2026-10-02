@@ -133,7 +133,7 @@ async function promoteToPremium(idToken) {
         return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     };
 
-    const orderId = 'neo-' + randomHex();
+    const orderId = 'tools.ajra.my.id-' + randomHex();
 
     const payload = {
         data: {
