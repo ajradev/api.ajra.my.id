@@ -1,146 +1,165 @@
-const axios = require('axios');
+const AXIOS = require('axios');
 
-async function resolveSoundCloudUrl(rawUrl) {
-    if (!rawUrl.includes('on.soundcloud.com')) {
-        return rawUrl;
-    }
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+const BASE_KLICKAUD = 'https://www.klickaud.org';
+
+async function RESOLVE_SC_URL(url) {
+    if (!url.includes('on.soundcloud.com')) return url;
 
     try {
-        const res = await axios.get(rawUrl, {
-            maxRedirects: 5,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
-            },
-            validateStatus: (status) => status >= 200 && status < 400
+        const res = await AXIOS.get(url, {
+            maxRedirects: 0,
+            validateStatus: (s) => s >= 200 && s < 400,
+            headers: { 'User-Agent': USER_AGENT }
         });
 
-        const finalUrl = res.request?.res?.responseUrl || res.config?.url;
-        return finalUrl || rawUrl;
-    } catch (e) {
-        return rawUrl;
+        if (res.headers['location']) {
+            return res.headers['location'].split('?')[0];
+        };
+
+        const html = res.data || '';
+        const match = html.match(/<meta\s+property="(?:og:url|al:web:url)"\s+content="([^"]+)"/i);
+        return match ? match[1].split('?')[0] : url;
+    } catch (err) {
+        const loc = err.response?.headers?.location;
+        return loc ? loc.split('?')[0] : url;
     }
-}
+};
+
+function CLEAN_TITLE(raw) {
+    return raw.replace(/_(?:KLICKAUD|forhub_soundcloud_to_mp3)\.mp3$/i, '').replace(/\.mp3$/i, '').replace(/_/g, ' ').trim();
+};
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
+    if (req.method === 'OPTIONS') return res.status(200).end();
 
-    let targetUrl = req.query.url;
-    if (!targetUrl) {
-        return res.status(400).json({ status: false, message: 'Parameter url wajib disertakan.' });
-    }
+    const RAW_URL = req.query.url;
+    if (!RAW_URL) {
+        return res.status(400).json({ status: false, message: 'Parameter query url wajib disertakan.' });
+    };
 
     try {
-        targetUrl = await resolveSoundCloudUrl(targetUrl);
+        const TARGET_URL = await RESOLVE_SC_URL(RAW_URL);
+        const COOKIES = [];
 
-        const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
-        let cookies = [];
-
-        const updateCookies = (response) => {
-            const setCookie = response.headers['set-cookie'] || [];
-            setCookie.forEach((c) => {
+        const UPDATE_COOKIES = (response) => {
+            (response.headers['set-cookie'] || []).forEach((c) => {
                 const val = c.split(';')[0];
-                if (val) cookies.push(val);
-            });
+                if (val) COOKIES.push(val);
+            })
         };
 
-        const getCookieHeader = () => cookies.join('; ');
+        const GET_COOKIE = () => COOKIES.join('; ');
 
-        const tokenRes = await axios.get('https://www.klickaud.org/csrf-token-endpoint.php', {
-            headers: {
-                'User-Agent': ua,
-                Referer: 'https://www.klickaud.org/en17/',
-                Accept: 'application/json',
-            },
-            timeout: 10000,
+        const TOKEN_RES = await AXIOS.get(`${BASE_KLICKAUD}/csrf-token-endpoint.php`, {
+            headers: { 'User-Agent': USER_AGENT, Referer: `${BASE_KLICKAUD}/en17/`, Accept: 'application/json' },
+            timeout: 10000
         });
-        updateCookies(tokenRes);
 
-        const csrfToken = tokenRes.data?.csrf_token;
-        if (!csrfToken) {
+        UPDATE_COOKIES(TOKEN_RES);
+
+        const CSRF_TOKEN = TOKEN_RES.data?.csrf_token;
+        if (!CSRF_TOKEN) {
             return res.status(502).json({ status: false, message: 'Gagal mengambil CSRF token Klickaud.' });
-        }
+        };
 
-        const params = new URLSearchParams();
-        params.append('value', targetUrl);
-        params.append('csrf_token', csrfToken);
-
-        const postRes = await axios.post('https://www.klickaud.org/download.php', params.toString(), {
+        const PARAMS = new URLSearchParams({ value: TARGET_URL, csrf_token: CSRF_TOKEN });
+        const POST_RES = await AXIOS.post(`${BASE_KLICKAUD}/download.php`, PARAMS.toString(), {
             headers: {
-                'User-Agent': ua,
-                Referer: 'https://www.klickaud.org/en17/',
-                Origin: 'https://www.klickaud.org',
+                'User-Agent': USER_AGENT,
+                Referer: `${BASE_KLICKAUD}/en17/`,
+                Origin: BASE_KLICKAUD,
                 'Content-Type': 'application/x-www-form-urlencoded',
-                Cookie: getCookieHeader(),
+                Cookie: GET_COOKIE()
             },
-            timeout: 15000,
-        });
-        updateCookies(postRes);
-
-        const html = postRes.data || '';
-        const downloadMode = (html.match(/name="download_mode"\s+value="([^"]+)"/i) || [])[1] || '';
-        const step2 = (html.match(/name="step2"\s+value="([^"]+)"/i) || [])[1] || '';
-        const titleMatch = html.match(/<td[^>]*>Title:<\/td>\s*<td[^>]*>([^<]+)<\/td>/i);
-        const title = titleMatch ? titleMatch[1].trim() : 'SoundCloud Track';
-
-        const thumbMatch = html.match(/<img[^>]+src="([^">]+\.(?:jpg|jpeg|png))"/i);
-        const thumbnail = thumbMatch ? thumbMatch[1] : '';
-
-        if (!downloadMode || !step2) {
-            return res.status(502).json({ status: false, message: 'Gagal mengekstrak step2 download token. Pastikan link lagu masih aktif dan publik.' });
-        }
-
-        await axios.get('https://www.klickaud.org/sse_capability.php?mode=sse', {
-            headers: {
-                'User-Agent': ua,
-                Referer: 'https://www.klickaud.org/en17/',
-                Cookie: getCookieHeader(),
-            },
-            timeout: 8000,
-        }).catch(() => {});
-
-        const workerUrl = `https://www.klickaud.org/worker_sse.php?step2=${encodeURIComponent(step2)}&download_mode=${encodeURIComponent(downloadMode)}`;
-        const workerRes = await axios.get(workerUrl, {
-            headers: {
-                'User-Agent': ua,
-                Referer: 'https://www.klickaud.org/en17/',
-                Accept: 'text/event-stream',
-                Cookie: getCookieHeader(),
-            },
-            timeout: 25000,
-            responseType: 'text',
+            timeout: 15000
         });
 
-        const sseText = workerRes.data || '';
-        const downloadMatch = sseText.match(/"download_url":"([^"]+)"/i) || sseText.match(/download_url\s*:\s*"([^"]+)"/i);
-        let downloadUrl = downloadMatch ? downloadMatch[1].replace(/\\/g, '') : null;
+        UPDATE_COOKIES(POST_RES);
 
-        if (!downloadUrl) {
-            const genericUrlMatch = sseText.match(/https?:\/\/[^\s"']+\.mp3[^\s"']*/i);
-            if (genericUrlMatch) downloadUrl = genericUrlMatch[0];
-        }
+        const HTML = POST_RES.data || '';
+        const DOWNLOAD_MODE = (HTML.match(/const\s+downloadMode\s*=\s*["']([^"']+)["']/) || [])[1] || '';
+        const DIRECT_URL = (HTML.match(/const\s+directDownloadUrl\s*=\s*["']([^"']*)["']/) || [])[1] || '';
+        const DEFAULT_FILE = (HTML.match(/const\s+defaultFileName\s*=\s*["']([^"']+)["']/) || [])[1] || 'SoundCloud Track';
+        const SSE_GRANT = (HTML.match(/const\s+sseGrant\s*=\s*["']([^"']+)["']/) || [])[1] || '';
 
-        if (!downloadUrl) {
-            return res.status(502).json({ status: false, message: 'URL stream MP3 tidak ditemukan.' });
-        }
+        if (DOWNLOAD_MODE === 'direct' && DIRECT_URL) {
+            return res.status(200).json({
+                status: true,
+                title: CLEAN_TITLE(DEFAULT_FILE),
+                download_url: DIRECT_URL
+            })
+        };
+
+        if (!SSE_GRANT) {
+            return res.status(502).json({ status: false, message: 'Gagal mengambil session grant dari Klickaud.' });
+        };
+
+        const CAP_RES = await AXIOS.post(`${BASE_KLICKAUD}/sse_capability.php`, { grant: SSE_GRANT, url: TARGET_URL }, {
+            headers: {
+                'User-Agent': USER_AGENT,
+                Referer: `${BASE_KLICKAUD}/download.php`,
+                Origin: BASE_KLICKAUD,
+                'Content-Type': 'application/json',
+                Cookie: GET_COOKIE()
+            },
+            timeout: 10000
+        });
+
+        UPDATE_COOKIES(CAP_RES);
+
+        const CAPABILITY = CAP_RES.data?.capability;
+        if (!CAPABILITY) {
+            return res.status(502).json({ status: false, message: 'Gagal mengotorisasi capability download.' });
+        };
+
+        const SSE_URL = `${BASE_KLICKAUD}/worker_sse.php?url=${encodeURIComponent(TARGET_URL)}&cap=${encodeURIComponent(CAPABILITY)}`;
+        const WORKER_RES = await AXIOS.get(SSE_URL, {
+            headers: {
+                'User-Agent': USER_AGENT,
+                Referer: `${BASE_KLICKAUD}/download.php`,
+                Cookie: GET_COOKIE(),
+                Accept: 'text/event-stream'
+            },
+            timeout: 30000,
+            responseType: 'text'
+        });
+
+        const SSE_TEXT = WORKER_RES.data || '';
+        let FINAL_DOWNLOAD_URL = null;
+        let FINAL_TITLE = CLEAN_TITLE(DEFAULT_FILE);
+
+        const READY_MATCH = SSE_TEXT.match(/event:\s*ready\s+data:\s*({.+})/);
+        if (READY_MATCH) {
+            try {
+                const PARSED = JSON.parse(READY_MATCH[1]);
+                FINAL_DOWNLOAD_URL = PARSED.download_url;
+                if (PARSED.file_name) FINAL_TITLE = CLEAN_TITLE(PARSED.file_name);
+            } catch (e) {}
+        };
+
+        if (!FINAL_DOWNLOAD_URL) {
+            const FALLBACK = SSE_TEXT.match(/"download_url":"([^"]+)"/i);
+            if (FALLBACK) FINAL_DOWNLOAD_URL = FALLBACK[1].replace(/\\/g, '');
+        };
+
+        if (!FINAL_DOWNLOAD_URL) {
+            return res.status(502).json({ status: false, message: 'URL download MP3 tidak ditemukan di worker stream.' });
+        };
 
         return res.status(200).json({
             status: true,
-            title: title,
-            thumbnail: thumbnail,
-            quality: '128 kbps (MP3)',
-            download_url: downloadUrl
-        });
-
+            title: FINAL_TITLE,
+            download_url: FINAL_DOWNLOAD_URL
+        })
     } catch (err) {
         return res.status(500).json({
             status: false,
-            message: err.message || 'Server error saat memproses audio SoundCloud.'
-        });
+            message: err.message || 'Server error saat memproses link SoundCloud.'
+        })
     }
 };
