@@ -1,5 +1,26 @@
 const axios = require('axios');
 
+async function resolveSoundCloudUrl(rawUrl) {
+    if (!rawUrl.includes('on.soundcloud.com')) {
+        return rawUrl;
+    }
+
+    try {
+        const res = await axios.get(rawUrl, {
+            maxRedirects: 5,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+            },
+            validateStatus: (status) => status >= 200 && status < 400
+        });
+
+        const finalUrl = res.request?.res?.responseUrl || res.config?.url;
+        return finalUrl || rawUrl;
+    } catch (e) {
+        return rawUrl;
+    }
+}
+
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -9,12 +30,14 @@ module.exports = async (req, res) => {
         return res.status(200).end();
     }
 
-    const targetUrl = req.query.url;
+    let targetUrl = req.query.url;
     if (!targetUrl) {
         return res.status(400).json({ status: false, message: 'Parameter url wajib disertakan.' });
     }
 
     try {
+        targetUrl = await resolveSoundCloudUrl(targetUrl);
+
         const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
         let cookies = [];
 
@@ -69,7 +92,7 @@ module.exports = async (req, res) => {
         const thumbnail = thumbMatch ? thumbMatch[1] : '';
 
         if (!downloadMode || !step2) {
-            return res.status(502).json({ status: false, message: 'Gagal mengekstrak step2 download token.' });
+            return res.status(502).json({ status: false, message: 'Gagal mengekstrak step2 download token. Pastikan link lagu masih aktif dan publik.' });
         }
 
         await axios.get('https://www.klickaud.org/sse_capability.php?mode=sse', {
@@ -103,7 +126,7 @@ module.exports = async (req, res) => {
         }
 
         if (!downloadUrl) {
-            return res.status(502).json({ status: false, message: 'URL direct stream MP3 tidak ditemukan dalam response Klickaud.' });
+            return res.status(502).json({ status: false, message: 'URL stream MP3 tidak ditemukan.' });
         }
 
         return res.status(200).json({
