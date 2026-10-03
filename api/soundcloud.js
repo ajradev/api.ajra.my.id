@@ -15,7 +15,7 @@ async function RESOLVE_SC_URL(url) {
 
         if (res.headers['location']) {
             return res.headers['location'].split('?')[0];
-        };
+        }
 
         const html = res.data || '';
         const match = html.match(/<meta\s+property="(?:og:url|al:web:url)"\s+content="([^"]+)"/i);
@@ -24,23 +24,48 @@ async function RESOLVE_SC_URL(url) {
         const loc = err.response?.headers?.location;
         return loc ? loc.split('?')[0] : url;
     }
-};
+}
 
 function CLEAN_TITLE(raw) {
     return raw.replace(/_(?:KLICKAUD|forhub_soundcloud_to_mp3)\.mp3$/i, '').replace(/\.mp3$/i, '').replace(/_/g, ' ').trim();
-};
+}
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', '*');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     const RAW_URL = req.query.url;
     if (!RAW_URL) {
         return res.status(400).json({ status: false, message: 'Parameter query url wajib disertakan.' });
-    };
+    }
+
+    if (req.query.stream === 'true') {
+        try {
+            const STREAM_RES = await AXIOS({
+                method: 'GET',
+                url: RAW_URL,
+                responseType: 'stream',
+                headers: {
+                    'User-Agent': USER_AGENT,
+                    'Referer': `${BASE_KLICKAUD}/`
+                },
+                timeout: 30000
+            });
+
+            res.setHeader('Content-Type', 'audio/mpeg');
+            res.setHeader('Accept-Ranges', 'bytes');
+            if (STREAM_RES.headers['content-length']) {
+                res.setHeader('Content-Length', STREAM_RES.headers['content-length']);
+            }
+
+            return STREAM_RES.data.pipe(res);
+        } catch (err) {
+            return res.status(500).send(err.message || 'Stream proxy error');
+        }
+    }
 
     try {
         const TARGET_URL = await RESOLVE_SC_URL(RAW_URL);
@@ -50,7 +75,7 @@ module.exports = async (req, res) => {
             (response.headers['set-cookie'] || []).forEach((c) => {
                 const val = c.split(';')[0];
                 if (val) COOKIES.push(val);
-            })
+            });
         };
 
         const GET_COOKIE = () => COOKIES.join('; ');
@@ -65,7 +90,7 @@ module.exports = async (req, res) => {
         const CSRF_TOKEN = TOKEN_RES.data?.csrf_token;
         if (!CSRF_TOKEN) {
             return res.status(502).json({ status: false, message: 'Gagal mengambil CSRF token Klickaud.' });
-        };
+        }
 
         const PARAMS = new URLSearchParams({ value: TARGET_URL, csrf_token: CSRF_TOKEN });
         const POST_RES = await AXIOS.post(`${BASE_KLICKAUD}/download.php`, PARAMS.toString(), {
@@ -92,12 +117,12 @@ module.exports = async (req, res) => {
                 status: true,
                 title: CLEAN_TITLE(DEFAULT_FILE),
                 download_url: DIRECT_URL
-            })
-        };
+            });
+        }
 
         if (!SSE_GRANT) {
             return res.status(502).json({ status: false, message: 'Gagal mengambil session grant dari Klickaud.' });
-        };
+        }
 
         const CAP_RES = await AXIOS.post(`${BASE_KLICKAUD}/sse_capability.php`, { grant: SSE_GRANT, url: TARGET_URL }, {
             headers: {
@@ -115,7 +140,7 @@ module.exports = async (req, res) => {
         const CAPABILITY = CAP_RES.data?.capability;
         if (!CAPABILITY) {
             return res.status(502).json({ status: false, message: 'Gagal mengotorisasi capability download.' });
-        };
+        }
 
         const SSE_URL = `${BASE_KLICKAUD}/worker_sse.php?url=${encodeURIComponent(TARGET_URL)}&cap=${encodeURIComponent(CAPABILITY)}`;
         const WORKER_RES = await AXIOS.get(SSE_URL, {
@@ -140,26 +165,26 @@ module.exports = async (req, res) => {
                 FINAL_DOWNLOAD_URL = PARSED.download_url;
                 if (PARSED.file_name) FINAL_TITLE = CLEAN_TITLE(PARSED.file_name);
             } catch (e) {}
-        };
+        }
 
         if (!FINAL_DOWNLOAD_URL) {
             const FALLBACK = SSE_TEXT.match(/"download_url":"([^"]+)"/i);
             if (FALLBACK) FINAL_DOWNLOAD_URL = FALLBACK[1].replace(/\\/g, '');
-        };
+        }
 
         if (!FINAL_DOWNLOAD_URL) {
             return res.status(502).json({ status: false, message: 'URL download MP3 tidak ditemukan di worker stream.' });
-        };
+        }
 
         return res.status(200).json({
             status: true,
             title: FINAL_TITLE,
             download_url: FINAL_DOWNLOAD_URL
-        })
+        });
     } catch (err) {
         return res.status(500).json({
             status: false,
             message: err.message || 'Server error saat memproses link SoundCloud.'
-        })
+        });
     }
 };
